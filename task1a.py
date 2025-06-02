@@ -43,6 +43,9 @@ def preprocess_data(df):
    else:
        df['SimnetBuild'] = 0
    
+   # Fill NaN values in Results
+   df['Results'] = df['Results'].fillna('')
+   
    # Count number of results and create binary features for common result types
    df['ResultsCount'] = df['Results'].str.count('\|') + 1
    
@@ -52,7 +55,7 @@ def preprocess_data(df):
                    'terrain', 'best_server', 'critical_buildings', 'catpsim']
    
    for result_type in result_types:
-       df[f'Has_{result_type}'] = df['Results'].str.contains(result_type, regex=False).astype(int)
+       df[f'Has_{result_type}'] = df['Results'].str.contains(result_type, regex=False, na=False).astype(int)
    
    # Handle AdditionalLayers
    df['AdditionalLayers'] = df['AdditionalLayers'].fillna('')
@@ -68,6 +71,9 @@ def preprocess_data(df):
        df[f'Layer_{layer_type}'] = df['AdditionalLayers'].str.contains(
            layer_type, regex=False, na=False).astype(int)
    
+   # Fill NaN values in Analysis
+   df['Analysis'] = df['Analysis'].fillna('')
+   
    # Count number of analyses and create binary features for common analysis types
    df['AnalysisCount'] = df['Analysis'].str.count('\|') + 1
    
@@ -77,27 +83,46 @@ def preprocess_data(df):
    
    for analysis_type in analysis_types:
        df[f'Analysis_{analysis_type}'] = df['Analysis'].str.contains(
-           analysis_type, regex=False).astype(int)
+           analysis_type, regex=False, na=False).astype(int)
+   
+   # Handle missing values in SitesUsed and SitesNotUsed
+   df['SitesUsed'] = df['SitesUsed'].fillna(0)
+   df['SitesNotUsed'] = df['SitesNotUsed'].fillna(0)
    
    # Calculate sites total
    df['SitesTotal'] = df['SitesUsed'] + df['SitesNotUsed']
+   
+   # Handle missing values in direction features
+   for col in ['Outbound', 'Inbound', 'Roundtrip', 'WorstDirection']:
+       df[col] = df[col].fillna(False)
    
    # Calculate direction features
    df['DirectionCount'] = df['Outbound'].astype(int) + df['Inbound'].astype(int) + \
                           df['Roundtrip'].astype(int) + df['WorstDirection'].astype(int)
    
+   # Handle missing values in EvalAreaInSquareKilometers
+   df['EvalAreaInSquareKilometers'] = df['EvalAreaInSquareKilometers'].fillna(0)
+   
    # Log transform area (since it has a wide range)
    df['LogArea'] = np.log1p(df['EvalAreaInSquareKilometers'])
    
+   # Handle missing values in SubscibersUsed
+   df['SubscibersUsed'] = df['SubscibersUsed'].fillna(1)
+   
+   # Handle missing values in UseNewCatpMode, VoiceTrafficUsed, and MakeVoyagerGrid
+   df['UseNewCatpMode'] = df['UseNewCatpMode'].fillna(False).astype(int)
+   df['VoiceTrafficUsed'] = df['VoiceTrafficUsed'].fillna(False).astype(int)
+   df['MakeVoyagerGrid'] = df['MakeVoyagerGrid'].fillna(False).astype(int)
+   
    # Create complexity scores
    df['ComplexityScore'] = (df['Resolution'] * df['SitesTotal'] * df['ResultsCount'] * 
-                            np.log1p(df['EvalAreaInSquareKilometers'])) / df['Cores']
+                            np.log1p(df['EvalAreaInSquareKilometers'])) / np.maximum(df['Cores'], 1)
    
    df['SiteDensity'] = df['SitesTotal'] / np.maximum(df['EvalAreaInSquareKilometers'], 1)
    
    # Create interaction features
-   df['AreaPerCore'] = df['EvalAreaInSquareKilometers'] / df['Cores']
-   df['SitesPerCore'] = df['SitesTotal'] / df['Cores']
+   df['AreaPerCore'] = df['EvalAreaInSquareKilometers'] / np.maximum(df['Cores'], 1)
+   df['SitesPerCore'] = df['SitesTotal'] / np.maximum(df['Cores'], 1)
    df['ResolutionAreaProduct'] = df['Resolution'] * df['LogArea']
    
    # Resolution complexity features
@@ -111,10 +136,10 @@ def preprocess_data(df):
    df['TaskComplexityScore'] = (df['Resolution'] * df['SitesTotal'] * 
                                df['ResultsCount'] * np.maximum(df['SubscibersUsed'], 1) * 
                                np.maximum(df['DirectionCount'], 1) * 
-                               np.log1p(df['EvalAreaInSquareKilometers'])) / df['Cores']
+                               np.log1p(df['EvalAreaInSquareKilometers'])) / np.maximum(df['Cores'], 1)
    
    # Additional interactions
-   df['CoreResolutionRatio'] = df['Resolution'] / df['Cores']
+   df['CoreResolutionRatio'] = df['Resolution'] / np.maximum(df['Cores'], 1)
    df['SiteSubscriberRatio'] = df['SitesTotal'] / np.maximum(df['SubscibersUsed'], 1)
    
    # Time-related features based on Version
