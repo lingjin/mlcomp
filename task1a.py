@@ -85,34 +85,34 @@ def preprocess_data(df):
        df[f'Analysis_{analysis_type}'] = df['Analysis'].str.contains(
            analysis_type, regex=False, na=False).astype(int)
    
-   # Handle missing values in SitesUsed and SitesNotUsed
-   df['SitesUsed'] = df['SitesUsed'].fillna(0)
-   df['SitesNotUsed'] = df['SitesNotUsed'].fillna(0)
+   # Ensure numeric types for all columns used in calculations
+   df['Resolution'] = pd.to_numeric(df['Resolution'], errors='coerce').fillna(0)
+   df['SitesUsed'] = pd.to_numeric(df['SitesUsed'], errors='coerce').fillna(0)
+   df['SitesNotUsed'] = pd.to_numeric(df['SitesNotUsed'], errors='coerce').fillna(0)
+   df['SubscibersUsed'] = pd.to_numeric(df['SubscibersUsed'], errors='coerce').fillna(1)
+   df['EvalAreaInSquareKilometers'] = pd.to_numeric(df['EvalAreaInSquareKilometers'], errors='coerce').fillna(0)
+   df['Version'] = pd.to_numeric(df['Version'], errors='coerce').fillna(0)
    
    # Calculate sites total
    df['SitesTotal'] = df['SitesUsed'] + df['SitesNotUsed']
    
    # Handle missing values in direction features
    for col in ['Outbound', 'Inbound', 'Roundtrip', 'WorstDirection']:
-       df[col] = df[col].fillna(False)
+       df[col] = df[col].fillna(False).astype(int)
    
    # Calculate direction features
-   df['DirectionCount'] = df['Outbound'].astype(int) + df['Inbound'].astype(int) + \
-                          df['Roundtrip'].astype(int) + df['WorstDirection'].astype(int)
-   
-   # Handle missing values in EvalAreaInSquareKilometers
-   df['EvalAreaInSquareKilometers'] = df['EvalAreaInSquareKilometers'].fillna(0)
+   df['DirectionCount'] = df['Outbound'] + df['Inbound'] + df['Roundtrip'] + df['WorstDirection']
    
    # Log transform area (since it has a wide range)
    df['LogArea'] = np.log1p(df['EvalAreaInSquareKilometers'])
-   
-   # Handle missing values in SubscibersUsed
-   df['SubscibersUsed'] = df['SubscibersUsed'].fillna(1)
    
    # Handle missing values in UseNewCatpMode, VoiceTrafficUsed, and MakeVoyagerGrid
    df['UseNewCatpMode'] = df['UseNewCatpMode'].fillna(False).astype(int)
    df['VoiceTrafficUsed'] = df['VoiceTrafficUsed'].fillna(False).astype(int)
    df['MakeVoyagerGrid'] = df['MakeVoyagerGrid'].fillna(False).astype(int)
+   
+   # Ensure ResultsCount is numeric
+   df['ResultsCount'] = pd.to_numeric(df['ResultsCount'], errors='coerce').fillna(1)
    
    # Create complexity scores
    df['ComplexityScore'] = (df['Resolution'] * df['SitesTotal'] * df['ResultsCount'] * 
@@ -286,63 +286,76 @@ def perform_cross_validation(model, X, y_log, y):
    return pipeline
 
 def main():
-   # Load data
-   print("Loading data...")
-   train_data = pd.read_csv('traing_data.csv')
-   test_data = pd.read_csv('test_data.csv')
-   print(f"Training data shape: {train_data.shape}")
-   print(f"Test data shape: {test_data.shape}")
+   try:
+       # Load data
+       print("Loading data...")
+       train_data = pd.read_csv('traing_data.csv')
+       test_data = pd.read_csv('test_data.csv')
+       print(f"Training data shape: {train_data.shape}")
+       print(f"Test data shape: {test_data.shape}")
 
-   # Apply preprocessing
-   print("Preprocessing data...")
-   train_data = preprocess_data(train_data)
-   test_data = preprocess_data(test_data)
+       # Display column types to help debug
+       print("\nColumn types before preprocessing:")
+       print(train_data.dtypes.head())
 
-   # Filter to only include data from version 3.1+ to match test data
-   train_data_filtered = train_data[train_data['SimnetMajor'] >= 3].copy()
-   print(f"Filtered training data shape: {train_data_filtered.shape}")
+       # Apply preprocessing
+       print("\nPreprocessing data...")
+       train_data = preprocess_data(train_data)
+       test_data = preprocess_data(test_data)
 
-   # Get feature lists
-   numerical_features, categorical_features = get_feature_lists()
+       # Display column types after preprocessing
+       print("\nColumn types after preprocessing:")
+       print(train_data.dtypes.head())
 
-   # Prepare data for modeling
-   X = train_data_filtered[numerical_features + categorical_features]
-   y = train_data_filtered['TimeInSeconds']
+       # Filter to only include data from version 3.1+ to match test data
+       train_data_filtered = train_data[train_data['SimnetMajor'] >= 3].copy()
+       print(f"Filtered training data shape: {train_data_filtered.shape}")
 
-   # Log transform the target for better model performance
-   y_log = np.log1p(y)
+       # Get feature lists
+       numerical_features, categorical_features = get_feature_lists()
 
-   # Build model
-   model = build_model()
-   
-   # Perform cross-validation
-   pipeline = perform_cross_validation(model, X, y_log, y)
-   
-   # Train the final model on all data
-   print("Training final model on full dataset...")
-   pipeline.fit(X, y_log)
-   
-   # Prepare test data for prediction
-   X_test = test_data[numerical_features + categorical_features]
+       # Prepare data for modeling
+       X = train_data_filtered[numerical_features + categorical_features]
+       y = train_data_filtered['TimeInSeconds']
 
-   # Make predictions on test data
-   print("Making predictions on test data...")
-   test_preds_log = pipeline.predict(X_test)
-   test_preds = np.expm1(test_preds_log)
+       # Log transform the target for better model performance
+       y_log = np.log1p(y)
 
-   # Ensure predictions are positive
-   test_preds = np.maximum(test_preds, 0)
+       # Build model
+       model = build_model()
+       
+       # Perform cross-validation
+       pipeline = perform_cross_validation(model, X, y_log, y)
+       
+       # Train the final model on all data
+       print("Training final model on full dataset...")
+       pipeline.fit(X, y_log)
+       
+       # Prepare test data for prediction
+       X_test = test_data[numerical_features + categorical_features]
 
-   # Final checks
-   print("Performing final checks...")
-   assert len(test_preds) == len(test_data), "Prediction count doesn't match test set size"
-   assert np.all(test_preds > 0), "Negative predictions detected"
+       # Make predictions on test data
+       print("Making predictions on test data...")
+       test_preds_log = pipeline.predict(X_test)
+       test_preds = np.expm1(test_preds_log)
 
-   # Save predictions to file
-   np.savetxt('prediction.txt', test_preds, fmt='%.6f')
+       # Ensure predictions are positive
+       test_preds = np.maximum(test_preds, 0)
 
-   print("Predictions saved to prediction.txt")
-   print("Done!")
+       # Final checks
+       print("Performing final checks...")
+       assert len(test_preds) == len(test_data), "Prediction count doesn't match test set size"
+       assert np.all(test_preds > 0), "Negative predictions detected"
+
+       # Save predictions to file
+       np.savetxt('prediction.txt', test_preds, fmt='%.6f')
+
+       print("Predictions saved to prediction.txt")
+       print("Done!")
+   except Exception as e:
+       print(f"Error occurred: {str(e)}")
+       import traceback
+       traceback.print_exc()
 
 if __name__ == "__main__":
    main()
