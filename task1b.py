@@ -1,13 +1,13 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import mean_absolute_percentage_error
 import lightgbm as lgbm
 import xgboost as xgb
-from sklearn.ensemble import StackingRegressor, VotingRegressor
+from sklearn.ensemble import VotingRegressor, RandomForestRegressor
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -113,6 +113,7 @@ def preprocess_data(df):
    
    # Ensure ResultsCount is numeric
    df['ResultsCount'] = pd.to_numeric(df['ResultsCount'], errors='coerce').fillna(1)
+   df['AnalysisCount'] = pd.to_numeric(df['AnalysisCount'], errors='coerce').fillna(1)
    
    # Create complexity scores
    df['ComplexityScore'] = (df['Resolution'] * df['SitesTotal'] * df['ResultsCount'] * 
@@ -145,6 +146,43 @@ def preprocess_data(df):
    # Time-related features based on Version
    df['VersionAge'] = 4 - df['SimnetMajor'] + ((10 - df['SimnetMinor']) / 10)
    
+   # Advanced feature engineering - polynomial features
+   df['SitesTotalSquared'] = df['SitesTotal'] ** 2
+   df['ResolutionSquared'] = df['Resolution'] ** 2
+   df['LogAreaSquared'] = df['LogArea'] ** 2
+   
+   # Interaction between sites and area
+   df['SiteAreaInteraction'] = df['SitesTotal'] * df['LogArea']
+   
+   # Interaction between resolution and results
+   df['ResolutionResultsInteraction'] = df['Resolution'] * df['ResultsCount']
+   
+   # Complex interactions
+   df['ComplexityScore2'] = (df['Resolution'] ** 1.5) * (df['SitesTotal'] ** 0.8) * \
+                             (df['ResultsCount'] ** 0.7) * (np.log1p(df['EvalAreaInSquareKilometers']) ** 0.9) / \
+                             (np.maximum(df['Cores'], 1) ** 0.95)
+   
+   # Feature for multi-directional complexity
+   df['MultiDirectional'] = (df['DirectionCount'] > 1).astype(int)
+   
+   # Feature for high resolution tasks
+   df['HighResolution'] = (df['Resolution'] > 10).astype(int)
+   
+   # Feature for large area tasks
+   df['LargeArea'] = (df['EvalAreaInSquareKilometers'] > 5000).astype(int)
+   
+   # Feature for complex tasks (combination of factors)
+   df['ComplexTask'] = ((df['Resolution'] > 5) & (df['SitesTotal'] > 10) & 
+                        (df['EvalAreaInSquareKilometers'] > 1000)).astype(int)
+   
+   # Normalize WorkspaceId to a hash value
+   df['WorkspaceHash'] = pd.util.hash_pandas_object(df['WorkspaceId']) % 1000
+   
+   # Mode encoding
+   if 'Mode' in df.columns:
+       mode_map = {'Draft': 0, 'Normal': 1, 'Fine': 2}
+       df['ModeNumeric'] = df['Mode'].map(mode_map).fillna(1)
+   
    return df
 
 # Custom function to optimize MAPE directly for LightGBM
@@ -164,7 +202,10 @@ def get_feature_lists():
        'AnalysisCount', 'ComplexityScore', 'SiteDensity', 'AreaPerCore', 'SitesPerCore',
        'ResolutionAreaProduct', 'ResolutionSitesProduct', 'ResolutionResultsProduct',
        'VersionComplexity', 'TaskComplexityScore', 'CoreResolutionRatio', 
-       'SiteSubscriberRatio', 'VersionAge'
+       'SiteSubscriberRatio', 'VersionAge', 'SitesTotalSquared', 'ResolutionSquared',
+       'LogAreaSquared', 'SiteAreaInteraction', 'ResolutionResultsInteraction',
+       'ComplexityScore2', 'MultiDirectional', 'HighResolution', 'LargeArea',
+       'ComplexTask', 'WorkspaceHash', 'ModeNumeric'
    ]
 
    # Result type features
@@ -198,16 +239,17 @@ def build_model():
    # Define LightGBM model with optimized hyperparameters
    lgb_params = {
        'objective': 'regression',
-       'n_estimators': 2000,
-       'learning_rate': 0.03,
-       'num_leaves': 40,
-       'max_depth': 8,
+       'n_estimators': 3000,
+       'learning_rate': 0.02,
+       'num_leaves': 50,
+       'max_depth': 10,
        'min_child_samples': 20,
        'subsample': 0.8,
-       'colsample_bytree': 0.8,
+       'colsample_bytree': 0.7,
        'reg_alpha': 0.1,
-       'reg_lambda': 0.1,
-       'random_state': 42
+       'reg_lambda': 1.0,
+       'random_state': 42,
+       'importance_type': 'gain'
    }
 
    lgb_model = lgbm.LGBMRegressor(**lgb_params)
@@ -215,35 +257,45 @@ def build_model():
    # Define XGBoost model with optimized hyperparameters
    xgb_params = {
        'objective': 'reg:squarederror',
-       'n_estimators': 1500,
-       'learning_rate': 0.03,
-       'max_depth': 7,
+       'n_estimators': 2000,
+       'learning_rate': 0.02,
+       'max_depth': 9,
        'min_child_weight': 3,
        'subsample': 0.8,
-       'colsample_bytree': 0.8,
+       'colsample_bytree': 0.7,
        'gamma': 0.1,
-       'reg_alpha': 0.1,
+       'reg_alpha': 0.2,
        'reg_lambda': 1.0,
        'random_state': 42
    }
 
    xgb_model = xgb.XGBRegressor(**xgb_params)
+   
+   # Define RandomForest model
+   rf_params = {
+       'n_estimators': 500,
+       'max_depth': 15,
+       'min_samples_split': 5,
+       'min_samples_leaf': 2,
+       'max_features': 'sqrt',
+       'random_state': 42
+   }
+   
+   rf_model = RandomForestRegressor(**rf_params)
 
    # Create a voting ensemble with optimized weights
    voting_regressor = VotingRegressor(
        estimators=[
            ('lgb', lgb_model),
-           ('xgb', xgb_model)
+           ('xgb', xgb_model),
+           ('rf', rf_model)
        ],
-       weights=[0.6, 0.4]  # Give more weight to LightGBM as it often performs better for this type of data
+       weights=[0.55, 0.35, 0.10]  # Weighted towards LightGBM
    )
    
    return voting_regressor
 
-def perform_cross_validation(model, X, y_log, y):
-   # Set up cross-validation
-   kf = KFold(n_splits=5, shuffle=True, random_state=42)
-   
+def train_and_predict(X_train, y_train_log, X_test, feature_importance=False):
    # Get feature lists
    numerical_features, categorical_features = get_feature_lists()
    
@@ -254,26 +306,77 @@ def perform_cross_validation(model, X, y_log, y):
            ('cat', OneHotEncoder(handle_unknown='ignore'), categorical_features)
        ])
    
+   # Build model
+   model = build_model()
+   
    # Define pipeline
    pipeline = Pipeline(steps=[
        ('preprocessor', preprocessor),
        ('regressor', model)
    ])
    
+   # Train the model
+   print("Training model...")
+   pipeline.fit(X_train, y_train_log)
+   
+   # Make predictions
+   print("Making predictions...")
+   test_preds_log = pipeline.predict(X_test)
+   test_preds = np.expm1(test_preds_log)
+   
+   # Ensure predictions are positive
+   test_preds = np.maximum(test_preds, 0)
+   
+   # Print feature importances if requested and available
+   if feature_importance:
+       # Try to get feature importances from LightGBM component
+       try:
+           lgb_model = pipeline['regressor'].named_estimators_['lgb']
+           importances = lgb_model.feature_importances_
+           
+           # Get feature names (this is approximate as we don't have exact mapping after preprocessing)
+           feature_names = numerical_features.copy()
+           
+           # Add encoded categorical features (approximate)
+           for cat in categorical_features:
+               if cat == 'Mode':
+                   feature_names.extend(['Mode_Draft', 'Mode_Fine', 'Mode_Normal'])
+               elif cat == 'TaskState':
+                   # Assuming TaskState has values 1-5
+                   feature_names.extend([f'TaskState_{i}' for i in range(1, 6)])
+           
+           # Print top features
+           if len(importances) == len(feature_names):
+               feature_imp = pd.DataFrame({'feature': feature_names, 'importance': importances})
+               feature_imp = feature_imp.sort_values('importance', ascending=False)
+               print("\nTop 20 important features (approximated):")
+               print(feature_imp.head(20))
+           else:
+               print("\nCouldn't match feature names with importances.")
+       except:
+           print("\nCouldn't extract feature importances.")
+   
+   return test_preds
+
+def perform_cross_validation(X, y_log, y):
+   # Set up cross-validation
+   kf = KFold(n_splits=5, shuffle=True, random_state=42)
+   
    # Cross-validation to estimate MAPE
    print("Performing cross-validation...")
    cv_scores = []
+   oof_preds = np.zeros(len(X))
+   
    for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
        print(f"Training fold {fold+1}/5...")
        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
        y_train_log, y_val = y_log.iloc[train_idx], y.iloc[val_idx]
        
-       # Train the model
-       pipeline.fit(X_train, y_train_log)
+       # Train and predict
+       val_preds = train_and_predict(X_train, y_train_log, X_val)
        
-       # Make predictions and convert back from log scale
-       val_preds_log = pipeline.predict(X_val)
-       val_preds = np.expm1(val_preds_log)
+       # Store out-of-fold predictions
+       oof_preds[val_idx] = val_preds
        
        # Calculate MAPE
        mape = mean_absolute_percentage_error(y_val, val_preds) * 100
@@ -281,9 +384,10 @@ def perform_cross_validation(model, X, y_log, y):
        
        print(f"Fold {fold+1} MAPE: {mape:.2f}%")
 
+   # Calculate overall MAPE on out-of-fold predictions
+   overall_mape = mean_absolute_percentage_error(y, oof_preds) * 100
+   print(f"Overall CV MAPE: {overall_mape:.2f}%")
    print(f"Average CV MAPE: {np.mean(cv_scores):.2f}%")
-   
-   return pipeline
 
 def main():
    try:
@@ -294,18 +398,10 @@ def main():
        print(f"Training data shape: {train_data.shape}")
        print(f"Test data shape: {test_data.shape}")
 
-       # Display column types to help debug
-       print("\nColumn types before preprocessing:")
-       print(train_data.dtypes.head())
-
        # Apply preprocessing
        print("\nPreprocessing data...")
        train_data = preprocess_data(train_data)
        test_data = preprocess_data(test_data)
-
-       # Display column types after preprocessing
-       print("\nColumn types after preprocessing:")
-       print(train_data.dtypes.head())
 
        # Filter to only include data from version 3.1+ to match test data
        train_data_filtered = train_data[train_data['SimnetMajor'] >= 3].copy()
@@ -318,29 +414,26 @@ def main():
        X = train_data_filtered[numerical_features + categorical_features]
        y = train_data_filtered['TimeInSeconds']
 
+       # Remove outliers (tasks with extremely long or short durations)
+       q_low = y.quantile(0.001)
+       q_high = y.quantile(0.999)
+       filtered_idx = (y >= q_low) & (y <= q_high)
+       X = X[filtered_idx]
+       y = y[filtered_idx]
+       print(f"Data shape after outlier removal: {X.shape}")
+
        # Log transform the target for better model performance
        y_log = np.log1p(y)
 
-       # Build model
-       model = build_model()
-       
-       # Perform cross-validation
-       pipeline = perform_cross_validation(model, X, y_log, y)
-       
-       # Train the final model on all data
-       print("Training final model on full dataset...")
-       pipeline.fit(X, y_log)
+       # Perform cross-validation to evaluate the model
+       perform_cross_validation(X, y_log, y)
        
        # Prepare test data for prediction
        X_test = test_data[numerical_features + categorical_features]
 
-       # Make predictions on test data
-       print("Making predictions on test data...")
-       test_preds_log = pipeline.predict(X_test)
-       test_preds = np.expm1(test_preds_log)
-
-       # Ensure predictions are positive
-       test_preds = np.maximum(test_preds, 0)
+       # Train on full dataset and make predictions
+       print("\nTraining final model on full dataset...")
+       test_preds = train_and_predict(X, y_log, X_test, feature_importance=True)
 
        # Final checks
        print("Performing final checks...")
@@ -348,7 +441,7 @@ def main():
        assert np.all(test_preds > 0), "Negative predictions detected"
 
        # Save predictions to file
-       np.savetxt('prediction1a.txt', test_preds, fmt='%.6f')
+       np.savetxt('prediction1b.txt', test_preds, fmt='%.6f')
 
        print("Predictions saved to prediction.txt")
        print("Done!")
